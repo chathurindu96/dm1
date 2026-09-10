@@ -1,5 +1,59 @@
+```
+# Dependencies
 node_modules/
-.next/
+.pnpm-store/
+
+# Build outputs
 dist/
 build/
+.next/
+out/
+
+# Environment variables
+.env
+.env.local
+.env.*
+!.env.example
+
+# Cache directories
+.cache/
+.node_modules/
+.yarn/
+.npm/
+
+# Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python related (if any Python files detected)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Prisma
+prisma/migrations/
+
+# Temporary files
+*.tmp
+*.temp
+```

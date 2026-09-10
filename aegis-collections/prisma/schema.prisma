@@ -1,0 +1,597 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ORGANIZATION & AUTH ====================
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  logoUrl     String?
+  address     String?
+  phone       String?
+  email       String?
+  settings    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  users       User[]
+  debtors     Debtor[]
+  creditors   Creditor[]
+  debts       DebtAccount[]
+  campaigns   Campaign[]
+  auditLogs   AuditLog[]
+
+  @@index([slug])
+  @@index([deletedAt])
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  AGENT
+  COMPLIANCE
+  VIEWER
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  passwordHash  String?
+  name          String?
+  avatarUrl     String?
+  phone         String?
+  role          Role      @default(AGENT)
+  twoFactorSecret String?
+  twoFactorEnabled Boolean @default(false)
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  accounts       Account[]
+  sessions       Session[]
+  assignedDebts  DebtAccount[]     @relation("AssignedAgent")
+  createdDebts   DebtAccount[]     @relation("CreatedBy")
+  payments       Payment[]
+  communications Communication[]
+  auditLogs      AuditLog[]
+
+  @@index([email])
+  @@index([organizationId])
+  @@index([deletedAt])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ==================== DEBTOR MANAGEMENT ====================
+
+model Debtor {
+  id            String   @id @default(cuid())
+  type          String   @default("INDIVIDUAL") // INDIVIDUAL or BUSINESS
+  firstName     String?
+  lastName      String?
+  companyName   String?
+  email         String?
+  phone         String?
+  alternatePhone String?
+  dateOfBirth   DateTime?
+  pan           String?  // India: Permanent Account Number
+  aadhaar       String?  // India: Unique ID
+  ssn           String?  // US: Social Security Number
+  taxId         String?  // Business tax ID
+
+  addresses     Address[]
+  documents     Document[]
+  debts         DebtAccount[]
+  communications Communication[]
+  tags          Tag[]
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([email])
+  @@index([phone])
+  @@index([organizationId])
+  @@index([deletedAt])
+}
+
+model Address {
+  id           String   @id @default(cuid())
+  type         String   @default("RESIDENTIAL") // RESIDENTIAL, BUSINESS, MAILING
+  line1        String
+  line2        String?
+  city         String
+  state        String
+  postalCode   String
+  country      String   @default("IN") // IN or US
+  isPrimary    Boolean  @default(false)
+  latitude     Float?
+  longitude    Float?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  debtorId     String
+  debtor       Debtor   @relation(fields: [debtorId], references: [id], onDelete: Cascade)
+
+  @@index([debtorId])
+  @@index([city, state])
+}
+
+model Creditor {
+  id           String   @id @default(cuid())
+  name         String
+  code         String   @unique
+  contactName  String?
+  email        String?
+  phone        String?
+  address      String?
+  accountNumber String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
+
+  debts        DebtAccount[]
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([code])
+  @@index([organizationId])
+}
+
+// ==================== DEBT ACCOUNTS ====================
+
+enum DebtStatus {
+  ACTIVE
+  CONTACTED
+  PTP_GIVEN
+  PTP_BROKEN
+  PARTIAL_PAID
+  SETTLED
+  WRITTEN_OFF
+  LEGAL
+  CLOSED
+}
+
+model DebtAccount {
+  id              String      @id @default(cuid())
+  accountNumber   String      @unique
+  originalAmount  Decimal     @db.Decimal(15, 2)
+  principal       Decimal     @db.Decimal(15, 2)
+  interest        Decimal     @db.Decimal(15, 2) @default(0)
+  charges         Decimal     @db.Decimal(15, 2) @default(0)
+  outstanding     Decimal     @db.Decimal(15, 2)
+  collected       Decimal     @db.Decimal(15, 2) @default(0)
+  dueDate         DateTime
+  originationDate DateTime?
+  status          DebtStatus  @default(ACTIVE)
+  aging           Int         @default(0) // days overdue
+  agingBucket     String      @default("0-30") // 0-30, 31-60, 61-90, 91-180, 180+
+  currency        String      @default("INR")
+  notes           String?
+  metadata        Json?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  deletedAt       DateTime?
+
+  debtorId        String
+  debtor          Debtor      @relation(fields: [debtorId], references: [id], onDelete: Cascade)
+  
+  creditorId      String?
+  creditor        Creditor?   @relation(fields: [creditorId], references: [id], onDelete: SetNull)
+
+  assignedAgentId String?
+  assignedAgent   User?       @relation("AssignedAgent", fields: [assignedAgentId], references: [id], onDelete: SetNull)
+
+  createdById     String
+  createdBy       User        @relation("CreatedBy", fields: [createdById], references: [id])
+
+  payments        Payment[]
+  ptps            PromiseToPay[]
+  communications  Communication[]
+  legalCases      LegalCase[]
+
+  @@index([debtorId])
+  @@index([status])
+  @@index([agingBucket])
+  @@index([assignedAgentId])
+  @@index([organizationId])
+  @@index([deletedAt])
+
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// ==================== PAYMENTS ====================
+
+enum PaymentMethod {
+  CASH
+  CHEQUE
+  NEFT
+  UPI
+  CARD
+  BANK_TRANSFER
+  OTHER
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  amount          Decimal       @db.Decimal(15, 2)
+  method          PaymentMethod
+  reference       String?       // Cheque number, TXN ID, etc.
+  receiptNumber   String        @unique
+  receiptUrl      String?
+  notes           String?
+  allocationRule  String        @default("INTEREST_FIRST") // INTEREST_FIRST, CHARGES_FIRST, PRINCIPAL_FIRST
+  status          String        @default("COMPLETED") // COMPLETED, PENDING, REVERSED
+  processedAt     DateTime      @default(now())
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  debtId          String
+  debt            DebtAccount   @relation(fields: [debtId], references: [id], onDelete: Cascade)
+
+  recordedById    String
+  recordedBy      User          @relation(fields: [recordedById], references: [id])
+
+  @@index([debtId])
+  @@index([receiptNumber])
+  @@index([processedAt])
+}
+
+// ==================== PROMISES TO PAY ====================
+
+enum PTPStatus {
+  PENDING
+  KEPT
+  BROKEN
+}
+
+model PromiseToPay {
+  id            String    @id @default(cuid())
+  amount        Decimal   @db.Decimal(15, 2)
+  promisedDate  DateTime
+  actualPaidDate DateTime?
+  status        PTPStatus @default(PENDING)
+  brokenReason  String?
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  debtId        String
+  debt          DebtAccount @relation(fields: [debtId], references: [id], onDelete: Cascade)
+
+  @@index([debtId])
+  @@index([status])
+  @@index([promisedDate])
+}
+
+// ==================== COMMUNICATIONS ====================
+
+enum CommunicationChannel {
+  CALL
+  EMAIL
+  SMS
+  WHATSAPP
+  LETTER
+  FIELD_VISIT
+}
+
+enum CommunicationDirection {
+  INBOUND
+  OUTBOUND
+}
+
+model Communication {
+  id            String              @id @default(cuid())
+  channel       CommunicationChannel
+  direction     CommunicationDirection
+  subject       String?
+  content       String              @db.Text
+  duration      Int?                // seconds (for calls)
+  recordingUrl  String?
+  templateUsed  String?
+  sentAt        DateTime?
+  deliveredAt   DateTime?
+  openedAt      DateTime?
+  metadata      Json?
+  createdAt     DateTime            @default(now())
+
+  debtorId      String?
+  debtor        Debtor?             @relation(fields: [debtorId], references: [id], onDelete: Cascade)
+
+  debtId        String?
+  debt          DebtAccount?        @relation(fields: [debtId], references: [id], onDelete: Cascade)
+
+  userId        String
+  user          User                @relation(fields: [userId], references: [id])
+
+  @@index([debtorId])
+  @@index([debtId])
+  @@index([channel])
+  @@index([createdAt])
+}
+
+// ==================== CAMPAIGNS ====================
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+model Campaign {
+  id            String        @id @default(cuid())
+  name          String
+  description   String?
+  status        CampaignStatus @default(DRAFT)
+  segmentCriteria Json?
+  startDate     DateTime?
+  endDate       DateTime?
+  totalDebtors  Int           @default(0)
+  contacted     Int           @default(0)
+  responded     Int           @default(0)
+  collected     Decimal       @db.Decimal(15, 2) @default(0)
+  settings      Json?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  rules         CampaignRule[]
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([organizationId])
+}
+
+model CampaignRule {
+  id          String   @id @default(cuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  trigger     String   // DAY_OVERDUE, STATUS_CHANGE, etc.
+  condition   Json
+  action      String   // SEND_EMAIL, SEND_SMS, ASSIGN_AGENT, etc.
+  config      Json
+  delay       Int      @default(0) // hours
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([campaignId])
+}
+
+// ==================== LEGAL ====================
+
+enum LegalCaseStatus {
+  OPEN
+  IN_PROGRESS
+  JUDGMENT
+  CLOSED
+  APPEALED
+}
+
+model LegalCase {
+  id            String         @id @default(cuid())
+  caseNumber    String         @unique
+  court         String
+  filingDate    DateTime
+  hearingDate   DateTime?
+  status        LegalCaseStatus @default(OPEN)
+  judgment      String?
+  amountClaimed Decimal        @db.Decimal(15, 2)
+  amountAwarded Decimal?       @db.Decimal(15, 2)
+  lawyerName    String?
+  lawyerContact String?
+  notes         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  debtId        String
+  debt          DebtAccount    @relation(fields: [debtId], references: [id], onDelete: Cascade)
+
+  notices       LegalNotice[]
+
+  @@index([debtId])
+  @@index([caseNumber])
+  @@index([status])
+}
+
+model LegalNotice {
+  id            String      @id @default(cuid())
+  type          String      // DEMAND, LEGAL, FINAL
+  content       String      @db.Text
+  sentDate      DateTime
+  deliveryMode  String      // EMAIL, POST, COURIER
+  trackingInfo  String?
+  receivedDate  DateTime?
+  templateUsed  String?
+  createdAt     DateTime    @default(now())
+
+  caseId        String
+  case          LegalCase   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([sentDate])
+}
+
+// ==================== DOCUMENTS & TAGS ====================
+
+enum DocumentType {
+  KYC
+  ID_PROOF
+  ADDRESS_PROOF
+  LOAN_AGREEMENT
+  CHEQUE
+  RECEIPT
+  LEGAL_NOTICE
+  OTHER
+}
+
+model Document {
+  id          String       @id @default(cuid())
+  type        DocumentType
+  name        String
+  url         String
+  mimeType    String
+  size        Int
+  metadata    Json?
+  uploadedAt  DateTime     @default(now())
+  createdAt   DateTime     @default(now())
+
+  debtorId    String?
+  debtor      Debtor?      @relation(fields: [debtorId], references: [id], onDelete: Cascade)
+
+  @@index([debtorId])
+  @@index([type])
+}
+
+model Tag {
+  id          String   @id @default(cuid())
+  name        String
+  color       String   @default("#6B7280")
+  description String?
+  createdAt   DateTime @default(now())
+
+  debtors     Debtor[]
+
+  @@unique([name])
+  @@index([name])
+}
+
+// ==================== AUDIT & ACTIVITY ====================
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  PAYMENT_RECORDED
+  PAYMENT_REVERSED
+  DEBT_ASSIGNED
+  STATUS_CHANGED
+  EXPORT
+  IMPORT
+}
+
+model AuditLog {
+  id          String      @id @default(cuid())
+  action      AuditAction
+  entity      String
+  entityId    String
+  oldValues   Json?
+  newValues   Json?
+  ipAddress   String?
+  userAgent   String?
+  timestamp   DateTime    @default(now())
+
+  userId      String?
+  user        User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([timestamp])
+  @@index([organizationId])
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  type        String
+  title       String
+  description String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  organizationId String
+  @@index([createdAt])
+  @@index([organizationId])
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// ==================== NOTIFICATIONS ====================
+
+enum NotificationType {
+  PAYMENT_RECEIVED
+  PTP_DUE_TODAY
+  PTP_BROKEN
+  DEBT_ASSIGNED
+  LEGAL_HEARING
+  CAMPAIGN_STARTED
+  SYSTEM
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  type      NotificationType
+  title     String
+  message   String
+  read      Boolean          @default(false)
+  actionUrl String?
+  createdAt DateTime         @default(now())
+
+  userId    String
+  @@index([userId])
+  @@index([read])
+  @@index([createdAt])
+}
